@@ -1,0 +1,14 @@
+[project]
+name = "finance-research"
+version = "0.2.0"
+description = "Finance research agent with configurable presets (GDP, Software Valuations) using LangChain Deep Agents and You.com Finance Research API"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "deepagents>=0.5.7",
+    "langchain-anthropic>=1.4.3",
+    "langchain-mcp-adapters>=0.2.2",
+    "python-dotenv>=1.2.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+]
