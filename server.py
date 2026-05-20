@@ -52,8 +52,8 @@ app = FastAPI(title="Finance Research Agent", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_methods=["POST", "OPTIONS", "GET"],
+    allow_headers=["*", "X-YDC-API-Key"],
 )
 
 
@@ -69,6 +69,16 @@ def _check_auth(request: Request):
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if token != API_SECRET:
         raise HTTPException(status_code=401, detail="Invalid API secret")
+
+
+def _resolve_ydc_api_key(request: Request) -> str:
+    key = request.headers.get("X-YDC-API-Key", "").strip()
+    if key:
+        return key
+    raise HTTPException(
+        status_code=401,
+        detail="You.com API key required. Pass it via the X-YDC-API-Key header.",
+    )
 
 
 _TOOL_LABELS: dict[str, str] = {
@@ -115,6 +125,7 @@ async def health():
 @app.post("/run")
 async def run_research(body: RunRequest, request: Request):
     _check_auth(request)
+    ydc_api_key = _resolve_ydc_api_key(request)
 
     if body.preset not in PRESETS:
         raise HTTPException(
@@ -129,14 +140,21 @@ async def run_research(body: RunRequest, request: Request):
 
         async def _produce() -> None:
             try:
-                await queue.put(_sse_event("status", {"phase": "creating_agent", "preset": body.preset}))
+                await queue.put(
+                    _sse_event(
+                        "status", {"phase": "creating_agent", "preset": body.preset}
+                    )
+                )
 
                 agent = await create_finance_research_agent(
                     preset=body.preset,
                     output_format=body.output_format,
+                    ydc_api_key=ydc_api_key,
                 )
 
-                await queue.put(_sse_event("status", {"phase": "running", "thread_id": thread_id}))
+                await queue.put(
+                    _sse_event("status", {"phase": "running", "thread_id": thread_id})
+                )
 
                 async for chunk in agent.astream(
                     {
@@ -152,9 +170,9 @@ async def run_research(body: RunRequest, request: Request):
                     ns = chunk["ns"]
                     data = chunk["data"]
 
-                    is_subagent = any(
-                        s.startswith("tools:") for s in ns
-                    ) if ns else False
+                    is_subagent = (
+                        any(s.startswith("tools:") for s in ns) if ns else False
+                    )
                     source = "subagent" if is_subagent else "main"
 
                     if chunk_type == "updates":
@@ -171,31 +189,58 @@ async def run_research(body: RunRequest, request: Request):
                                     for tc in tool_calls:
                                         tc_name = tc.get("name", "")
                                         tc_args = tc.get("args", {})
-                                        await queue.put(_sse_event("tool_call", {
-                                            "source": source,
-                                            "tool": tc_name,
-                                            "label": _TOOL_LABELS.get(tc_name, tc_name),
-                                            "preview": _tool_args_preview(tc_name, tc_args),
-                                        }))
+                                        await queue.put(
+                                            _sse_event(
+                                                "tool_call",
+                                                {
+                                                    "source": source,
+                                                    "tool": tc_name,
+                                                    "label": _TOOL_LABELS.get(
+                                                        tc_name, tc_name
+                                                    ),
+                                                    "preview": _tool_args_preview(
+                                                        tc_name, tc_args
+                                                    ),
+                                                },
+                                            )
+                                        )
 
                                 # Emit a tool_result event for every tool response
                                 if getattr(msg, "type", None) == "tool":
                                     tool_name = getattr(msg, "name", "")
                                     content = getattr(msg, "content", "")
-                                    preview = content[:500] if isinstance(content, str) else str(content)[:500]
-                                    await queue.put(_sse_event("tool_result", {
-                                        "source": source,
-                                        "tool": tool_name,
-                                        "label": _TOOL_LABELS.get(tool_name, tool_name),
-                                        "preview": preview,
-                                        "length": len(content) if isinstance(content, str) else 0,
-                                    }))
+                                    preview = (
+                                        content[:500]
+                                        if isinstance(content, str)
+                                        else str(content)[:500]
+                                    )
+                                    await queue.put(
+                                        _sse_event(
+                                            "tool_result",
+                                            {
+                                                "source": source,
+                                                "tool": tool_name,
+                                                "label": _TOOL_LABELS.get(
+                                                    tool_name, tool_name
+                                                ),
+                                                "preview": preview,
+                                                "length": len(content)
+                                                if isinstance(content, str)
+                                                else 0,
+                                            },
+                                        )
+                                    )
 
-                            await queue.put(_sse_event("step", {
-                                "source": source,
-                                "node": node_name,
-                                "action": "step_complete",
-                            }))
+                            await queue.put(
+                                _sse_event(
+                                    "step",
+                                    {
+                                        "source": source,
+                                        "node": node_name,
+                                        "action": "step_complete",
+                                    },
+                                )
+                            )
 
                     elif chunk_type == "messages":
                         token, metadata = data
@@ -203,11 +248,13 @@ async def run_research(body: RunRequest, request: Request):
 
                         if isinstance(raw_content, list):
                             text = "".join(
-                                b.get("text", "") for b in raw_content
+                                b.get("text", "")
+                                for b in raw_content
                                 if isinstance(b, dict) and b.get("type") == "text"
                             )
                             thinking = "".join(
-                                b.get("thinking", "") for b in raw_content
+                                b.get("thinking", "")
+                                for b in raw_content
                                 if isinstance(b, dict) and b.get("type") == "thinking"
                             )
                         else:
@@ -219,30 +266,45 @@ async def run_research(body: RunRequest, request: Request):
 
                         if getattr(token, "type", "") == "AIMessageChunk":
                             if thinking:
-                                await queue.put(_sse_event("thinking", {
-                                    "source": source,
-                                    "content": thinking,
-                                }))
+                                await queue.put(
+                                    _sse_event(
+                                        "thinking",
+                                        {
+                                            "source": source,
+                                            "content": thinking,
+                                        },
+                                    )
+                                )
                             if text:
-                                await queue.put(_sse_event("token", {
-                                    "source": source,
-                                    "content": text,
-                                }))
+                                await queue.put(
+                                    _sse_event(
+                                        "token",
+                                        {
+                                            "source": source,
+                                            "content": text,
+                                        },
+                                    )
+                                )
 
                 # Stream complete — extract and send the final report
                 report = extract_report_from_messages(all_messages, body.query)
-                await queue.put(_sse_event("report", {
-                    "query": report.query,
-                    "markdown": report.raw_markdown,
-                    "findings": [
+                await queue.put(
+                    _sse_event(
+                        "report",
                         {
-                            "topic": f.topic,
-                            "content": f.content,
-                            "citations": f.citations,
-                        }
-                        for f in report.findings
-                    ],
-                }))
+                            "query": report.query,
+                            "markdown": report.raw_markdown,
+                            "findings": [
+                                {
+                                    "topic": f.topic,
+                                    "content": f.content,
+                                    "citations": f.citations,
+                                }
+                                for f in report.findings
+                            ],
+                        },
+                    )
+                )
 
                 await queue.put(_sse_event("status", {"phase": "complete"}))
 
