@@ -103,9 +103,7 @@ def _extract_citations(text: str) -> list[dict[str, str]]:
     )
     if source_section:
         for line in source_section.group(1).strip().split("\n"):
-            match = re.match(
-                r"\[?\[(\d+)\]?\]?\s*(.+?):\s*(https?://\S+)", line
-            )
+            match = re.match(r"\[?\[(\d+)\]?\]?\s*(.+?):\s*(https?://\S+)", line)
             if match:
                 citations.append(
                     {

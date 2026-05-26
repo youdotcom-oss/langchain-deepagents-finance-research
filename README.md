@@ -6,7 +6,9 @@ This project is focused on conducting **GDP macroeconomic analysis**. There is a
 
 ## How It Works
 
-The agent decomposes broad financial questions into precise queries, sends them to You.com's Finance Research API through the `you-finance` tool, and synthesizes the cited results into a structured report. The Finance Research API handles the heavy lifting internally — multi-step research, source verification, and citation generation — so the agent focuses on query planning and report assembly.
+The GDP preset uses a multi-subagent architecture built on Deep Agents. An orchestrator agent coordinates five specialized subagents — `landscape-scanner`, `anomaly-analyst`, `expenditure-decomposer`, `sector-decomposer`, and `country-investigator` — each with a focused system prompt and access to the You.com Finance Research API. The orchestrator plans the research via `write_todos`, dispatches subagents via the `task` tool, fans out per-country investigations in parallel, cross-references all workpapers for contradictions, and synthesizes the final report.
+
+Each subagent writes its output to a named workpaper file on a `FilesystemBackend`. The Finance Research API handles the heavy lifting internally — multi-step research, source verification, and citation generation — so the subagents focus on query construction, and the orchestrator focuses on workflow coordination and report assembly.
 
 ## Presets
 
@@ -15,7 +17,7 @@ The agent decomposes broad financial questions into precise queries, sends them 
 | `gdp` | GDP and macroeconomic analysis across countries/regions | EU GDP by country with anomaly detection |
 | `software_valuations` | Public software company valuation multiples | Median EV/Revenue and EV/EBITDA by segment |
 
-Each preset provides a tailored system prompt, query decomposition strategy, and report structure. The underlying tool, skill files, and agent machinery are shared.
+Each preset provides a tailored system prompt, query decomposition strategy, and report structure. The GDP preset uses multi-subagent orchestration with workpapers. The software valuations preset uses single-agent mode. The underlying tool, skill files, and agent machinery are shared.
 
 ## Project Structure
 
@@ -29,8 +31,9 @@ Each preset provides a tailored system prompt, query decomposition strategy, and
 │       └── openapi_finance_research.yaml # OpenAPI spec for reference
 ├── src/
 │   └── finance_research/
-│       ├── agent.py             # Deep Agent setup with HTTP/MCP tool
-│       ├── prompts.py           # Preset system prompts and workflows
+│       ├── agent.py             # Deep Agent setup, subagents, FilesystemBackend
+│       ├── tools.py             # Finance Research API tool (HTTP + MCP transports)
+│       ├── prompts.py           # Orchestrator + subagent prompts and workflows
 │       └── output.py            # Markdown/JSON report formatters
 └── examples/
     └── eu_gdp_analysis.py       # GDP preset example
@@ -163,14 +166,17 @@ The project ships with a `Dockerfile` and is ready to deploy on [Railway](https:
 
 ## Architecture
 
-The agent uses a thin orchestration layer on top of the Finance Research API:
+The GDP preset uses multi-subagent orchestration with the canonical Deep Agents patterns:
 
-1. **Preset selection** — Choose a research preset (`gdp` or `software_valuations`) that configures the system prompt, query decomposition strategy, and report structure.
-2. **Decompose** — Break the user's question into scoped `youdotcom-finance-research` queries with the right effort level (`deep` or `exhaustive`) and source control.
-3. **Query** — Call `youdotcom-finance-research` via direct HTTP (or MCP). The API internally runs parallel research branches, consults structured public data, and returns cited answers with `[[n]]` source tags.
-4. **Synthesize** — Merge results from multiple tool calls into a unified report with re-numbered citations.
+1. **Plan** — The orchestrator calls `write_todos` to lay out a layered research plan as a checklist.
+2. **Layer 1 — Landscape scan** — Dispatches `landscape-scanner` subagent to retrieve data tables for all 27 EU member states via Shape A queries. Results written to `/workpapers/landscape_scan.md`.
+3. **Layer 2 — Anomaly detection** — Dispatches `anomaly-analyst` subagent to compute the regional mean, flag outliers (>=2.0 pp deviation), and recommend investigation targets. Writes to `/workpapers/anomaly_analysis.md` with a fenced JSON block at the end that the orchestrator parses to extract investigation targets. Pure analysis, no API calls.
+4. **Layer 3a — Quantitative decomposition** — Dispatches `expenditure-decomposer` and `sector-decomposer` in parallel (two `task` calls in one message).
+5. **Layer 3b — Country investigation fan-out** — Dispatches one `country-investigator` subagent per anomalous country, in parallel. Each runs Shape B queries and writes its own workpaper.
+6. **Cross-reference** — The orchestrator reads all workpapers, checks for contradictions, and dispatches `general-purpose` for verification queries if needed.
+7. **Synthesize** — Merges all workpapers into a final report with unified `[[n]]` citation numbering. Written to `/final_report.md`.
 
-The agent does **not** duplicate work the Finance Research API already handles (source verification, cross-referencing, multi-step evidence gathering).
+Each subagent receives the `you_finance_research` tool explicitly — the orchestrator itself doesn't have the tool (it coordinates via `task` dispatch, not direct API calls). The built-in `general-purpose` subagent is overridden with an explicit spec that includes the tool, so the orchestrator can dispatch ad-hoc verification queries. The orchestrator runs on Opus 4.6 for complex coordination and synthesis; all subagents run on Sonnet 4.6.
 
 ## Tool Transport
 

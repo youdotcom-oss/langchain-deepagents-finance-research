@@ -61,6 +61,7 @@ class RunRequest(BaseModel):
     preset: str = "gdp"
     query: str
     output_format: str = "markdown"
+    ydc_api_key: str = ""
 
 
 def _check_auth(request: Request):
@@ -71,17 +72,18 @@ def _check_auth(request: Request):
         raise HTTPException(status_code=401, detail="Invalid API secret")
 
 
-def _resolve_ydc_api_key(request: Request) -> str:
-    key = request.headers.get("X-YDC-API-Key", "").strip()
+def _resolve_ydc_api_key(request: Request, body_key: str = "") -> str:
+    key = body_key.strip() or request.headers.get("X-YDC-API-Key", "").strip()
     if key:
         return key
     raise HTTPException(
         status_code=401,
-        detail="You.com API key required. Pass it via the X-YDC-API-Key header.",
+        detail="You.com API key required. Pass it via the X-YDC-API-Key header or ydc_api_key body field.",
     )
 
 
 _TOOL_LABELS: dict[str, str] = {
+    "you_finance_research": "Researching finance data",
     "youdotcom-finance-research": "Researching finance data",
     "task": "Delegating to subagent",
     "write_file": "Writing file",
@@ -97,10 +99,12 @@ _TOOL_LABELS: dict[str, str] = {
 
 def _tool_args_preview(name: str, args: dict) -> str:
     """Return the most human-readable single arg for a tool call."""
-    if name in ("youdotcom-finance-research"):
+    if name in ("you_finance_research", "youdotcom-finance-research"):
         return args.get("input", "")[:300]
     if name == "task":
-        return args.get("description", "")
+        subagent = args.get("subagent_type", "")
+        desc = args.get("description", "")[:200]
+        return f"[{subagent}] {desc}" if subagent else desc
     if name in ("write_file", "read_file", "edit_file"):
         return args.get("file_path", "") or args.get("path", "")
     if name == "execute":
@@ -109,6 +113,11 @@ def _tool_args_preview(name: str, args: dict) -> str:
         return args.get("path", "") or args.get("pattern", "")
     if name == "grep":
         return args.get("pattern", "")
+    if name == "write_todos":
+        todos = args.get("todos", [])
+        if todos:
+            return f"{len(todos)} items"
+        return ""
     return json.dumps(args, default=str)[:200]
 
 
@@ -122,10 +131,142 @@ async def health():
     return {"status": "ok", "presets": list(PRESETS.keys())}
 
 
+async def _stream_agent(agent, input_data, config, queue, all_messages, query):
+    """Stream agent execution to completion."""
+    async for chunk in agent.astream(
+        input_data,
+        config=config,
+        stream_mode=["updates", "messages"],
+        subgraphs=True,
+        version="v2",
+    ):
+        chunk_type = chunk["type"]
+        ns = chunk["ns"]
+        data = chunk["data"]
+
+        is_subagent = (
+            any(s.startswith("tools:") for s in ns) if ns else False
+        )
+        source = "subagent" if is_subagent else "main"
+
+        if chunk_type == "updates":
+            for node_name, node_data in data.items():
+                if not node_data:
+                    continue
+                messages = node_data.get("messages", [])
+                for msg in messages:
+                    all_messages.append(msg)
+
+                    # Emit a tool_call event for every tool the agent invokes
+                    tool_calls = getattr(msg, "tool_calls", None)
+                    if tool_calls:
+                        for tc in tool_calls:
+                            tc_name = tc.get("name", "")
+                            tc_args = tc.get("args", {})
+                            await queue.put(
+                                _sse_event(
+                                    "tool_call",
+                                    {
+                                        "source": source,
+                                        "tool": tc_name,
+                                        "label": _TOOL_LABELS.get(
+                                            tc_name, tc_name
+                                        ),
+                                        "preview": _tool_args_preview(
+                                            tc_name, tc_args
+                                        ),
+                                    },
+                                )
+                            )
+
+                    # Emit a tool_result event for every tool response
+                    if getattr(msg, "type", None) == "tool":
+                        tool_name = getattr(msg, "name", "")
+                        content = getattr(msg, "content", "")
+                        preview = (
+                            content[:500]
+                            if isinstance(content, str)
+                            else str(content)[:500]
+                        )
+                        await queue.put(
+                            _sse_event(
+                                "tool_result",
+                                {
+                                    "source": source,
+                                    "tool": tool_name,
+                                    "label": _TOOL_LABELS.get(
+                                        tool_name, tool_name
+                                    ),
+                                    "preview": preview,
+                                    "length": len(content)
+                                    if isinstance(content, str)
+                                    else 0,
+                                },
+                            )
+                        )
+
+                await queue.put(
+                    _sse_event(
+                        "step",
+                        {
+                            "source": source,
+                            "node": node_name,
+                            "action": "step_complete",
+                        },
+                    )
+                )
+
+        elif chunk_type == "messages":
+            token, metadata = data
+            raw_content = getattr(token, "content", "")
+
+            if isinstance(raw_content, list):
+                text = "".join(
+                    b.get("text", "")
+                    for b in raw_content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+                thinking = "".join(
+                    b.get("thinking", "")
+                    for b in raw_content
+                    if isinstance(b, dict) and b.get("type") == "thinking"
+                )
+            else:
+                text = raw_content
+                thinking = ""
+
+            if getattr(token, "tool_call_chunks", None):
+                continue
+
+            if getattr(token, "type", "") == "AIMessageChunk":
+                if thinking:
+                    await queue.put(
+                        _sse_event(
+                            "thinking",
+                            {
+                                "source": source,
+                                "content": thinking,
+                            },
+                        )
+                    )
+                if text:
+                    await queue.put(
+                        _sse_event(
+                            "token",
+                            {
+                                "source": source,
+                                "content": text,
+                            },
+                        )
+                    )
+
+    return
+
+
 @app.post("/run")
 async def run_research(body: RunRequest, request: Request):
     _check_auth(request)
-    ydc_api_key = _resolve_ydc_api_key(request)
+    ydc_api_key = _resolve_ydc_api_key(request, body.ydc_api_key)
 
     if body.preset not in PRESETS:
         raise HTTPException(
@@ -146,148 +287,31 @@ async def run_research(body: RunRequest, request: Request):
                     )
                 )
 
-                agent = await create_finance_research_agent(
+                session = await create_finance_research_agent(
                     preset=body.preset,
                     output_format=body.output_format,
                     ydc_api_key=ydc_api_key,
                 )
 
+                config = {"configurable": {"thread_id": thread_id}}
+
                 await queue.put(
                     _sse_event("status", {"phase": "running", "thread_id": thread_id})
                 )
 
-                async for chunk in agent.astream(
-                    {
-                        "messages": [{"role": "user", "content": body.query}],
-                        "files": agent._skill_files,
-                    },
-                    config={"configurable": {"thread_id": thread_id}},
-                    stream_mode=["updates", "messages"],
-                    subgraphs=True,
-                    version="v2",
-                ):
-                    chunk_type = chunk["type"]
-                    ns = chunk["ns"]
-                    data = chunk["data"]
+                input_data = {
+                    "messages": [{"role": "user", "content": body.query}],
+                }
 
-                    is_subagent = (
-                        any(s.startswith("tools:") for s in ns) if ns else False
-                    )
-                    source = "subagent" if is_subagent else "main"
-
-                    if chunk_type == "updates":
-                        for node_name, node_data in data.items():
-                            if not node_data:
-                                continue
-                            messages = node_data.get("messages", [])
-                            for msg in messages:
-                                all_messages.append(msg)
-
-                                # Emit a tool_call event for every tool the agent invokes
-                                tool_calls = getattr(msg, "tool_calls", None)
-                                if tool_calls:
-                                    for tc in tool_calls:
-                                        tc_name = tc.get("name", "")
-                                        tc_args = tc.get("args", {})
-                                        await queue.put(
-                                            _sse_event(
-                                                "tool_call",
-                                                {
-                                                    "source": source,
-                                                    "tool": tc_name,
-                                                    "label": _TOOL_LABELS.get(
-                                                        tc_name, tc_name
-                                                    ),
-                                                    "preview": _tool_args_preview(
-                                                        tc_name, tc_args
-                                                    ),
-                                                },
-                                            )
-                                        )
-
-                                # Emit a tool_result event for every tool response
-                                if getattr(msg, "type", None) == "tool":
-                                    tool_name = getattr(msg, "name", "")
-                                    content = getattr(msg, "content", "")
-                                    preview = (
-                                        content[:500]
-                                        if isinstance(content, str)
-                                        else str(content)[:500]
-                                    )
-                                    await queue.put(
-                                        _sse_event(
-                                            "tool_result",
-                                            {
-                                                "source": source,
-                                                "tool": tool_name,
-                                                "label": _TOOL_LABELS.get(
-                                                    tool_name, tool_name
-                                                ),
-                                                "preview": preview,
-                                                "length": len(content)
-                                                if isinstance(content, str)
-                                                else 0,
-                                            },
-                                        )
-                                    )
-
-                            await queue.put(
-                                _sse_event(
-                                    "step",
-                                    {
-                                        "source": source,
-                                        "node": node_name,
-                                        "action": "step_complete",
-                                    },
-                                )
-                            )
-
-                    elif chunk_type == "messages":
-                        token, metadata = data
-                        raw_content = getattr(token, "content", "")
-
-                        if isinstance(raw_content, list):
-                            text = "".join(
-                                b.get("text", "")
-                                for b in raw_content
-                                if isinstance(b, dict) and b.get("type") == "text"
-                            )
-                            thinking = "".join(
-                                b.get("thinking", "")
-                                for b in raw_content
-                                if isinstance(b, dict) and b.get("type") == "thinking"
-                            )
-                        else:
-                            text = raw_content
-                            thinking = ""
-
-                        if getattr(token, "tool_call_chunks", None):
-                            continue
-
-                        if getattr(token, "type", "") == "AIMessageChunk":
-                            if thinking:
-                                await queue.put(
-                                    _sse_event(
-                                        "thinking",
-                                        {
-                                            "source": source,
-                                            "content": thinking,
-                                        },
-                                    )
-                                )
-                            if text:
-                                await queue.put(
-                                    _sse_event(
-                                        "token",
-                                        {
-                                            "source": source,
-                                            "content": text,
-                                        },
-                                    )
-                                )
+                await _stream_agent(
+                    session.agent, input_data, config, queue, all_messages, body.query
+                )
 
                 # Stream complete — extract and send the final report
                 report = extract_report_from_messages(all_messages, body.query)
+
+                logger.info("Run complete. Output files in: %s", session.reports_dir)
+
                 await queue.put(
                     _sse_event(
                         "report",
@@ -305,8 +329,7 @@ async def run_research(body: RunRequest, request: Request):
                         },
                     )
                 )
-
-                await queue.put(_sse_event("status", {"phase": "complete"}))
+                await queue.put(_sse_event("status", {"phase": "complete", "output_dir": session.reports_dir}))
 
             except Exception as e:
                 logger.exception("Research run failed")
