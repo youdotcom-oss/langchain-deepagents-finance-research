@@ -137,7 +137,7 @@ async def create_finance_research_agent(
         agent_tools = list(tools)
 
     agent = create_deep_agent(
-        model="anthropic:claude-opus-4-6",
+        model="openrouter:minimax/minimax-m2p7",
         tools=agent_tools,
         system_prompt=system_prompt,
         subagents=subagents,

@@ -5,7 +5,7 @@ and streams SSE events back to the client with typed payloads:
   - status:      phase transitions (creating_agent, running, complete)
   - tool_call:   any tool the agent invokes, with a human-readable label + args preview
   - tool_result: any tool result, with a content preview
-  - thinking:    Anthropic extended-thinking blocks as they stream
+  - thinking:    model reasoning blocks as they stream (model-dependent, may not appear)
   - token:       streaming LLM text tokens
   - report:      final assembled report (markdown + structured findings)
   - error:       if something fails

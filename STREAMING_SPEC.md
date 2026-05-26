@@ -6,7 +6,7 @@ Spec for a React frontend that consumes a Server-Sent Events stream from the fin
 
 ## 1. Backend overview
 
-The backend is a FastAPI server (`server.py`) that wraps a LangChain Deep Agent. The agent uses Claude claude-opus-4-7, has access to a `you_finance` research tool, and can delegate work to subagents. A single run can take 30 seconds to 10+ minutes depending on query complexity.
+The backend is a FastAPI server (`server.py`) that wraps a LangChain Deep Agent. The agent uses Minimax M2.7 (orchestrator) and M2.5 (subagents) via OpenRouter, has access to a `you_finance` research tool, and can delegate work to subagents. A single run can take 30 seconds to 10+ minutes depending on query complexity.
 
 **Deployment:** Railway (Docker, `Dockerfile` in repo root)
 **Base URL:** set via environment variable, e.g. `NEXT_PUBLIC_API_URL`
@@ -121,7 +121,7 @@ data: {"source": "main", "tool": "you_finance", "label": "Researching finance da
 
 ### 3.4 `thinking`
 
-Emitted when the model produces extended-thinking content (Anthropic only). These are internal reasoning fragments — not part of the final answer.
+Emitted when the model produces reasoning content (model-dependent, not all providers emit this). These are internal reasoning fragments — not part of the final answer.
 
 ```
 event: thinking
@@ -367,7 +367,7 @@ await fetchEventSource(`${API_URL}/run`, {
 
 2. **Token concatenation.** `token` events are fragments. Concatenate `content` fields in order to build the full response. Do NOT replace — append.
 
-3. **Thinking is optional.** The `thinking` event only appears if the model uses Anthropic extended thinking. Don't depend on it being present.
+3. **Thinking is optional.** The `thinking` event only appears if the model emits reasoning content (e.g., Anthropic extended thinking). Don't depend on it being present.
 
 4. **Report vs tokens.** The `report` event contains the canonical final output (extracted from the agent's `write_file` to `/final_report.md`). The concatenated `token` stream is the agent's visible narration, which may be shorter or different from the report. **Always prefer `report.markdown` for the final rendered output.**
 
@@ -392,4 +392,4 @@ curl -s -N --no-buffer \
   -d '{"preset":"gdp","query":"What is Germany GDP in 2024? One sentence only.","output_format":"markdown"}'
 ```
 
-This prints raw SSE events as they arrive. A simple query like the above completes in ~30-60 seconds and produces all event types except `thinking` (which requires extended thinking to be enabled on the model).
+This prints raw SSE events as they arrive. A simple query like the above completes in ~30-60 seconds and produces all event types except `thinking` (which only appears if the model emits reasoning content).

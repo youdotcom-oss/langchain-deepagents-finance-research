@@ -46,7 +46,7 @@ Each preset provides a tailored system prompt, query decomposition strategy, and
 - Python 3.14+
 - [uv](https://docs.astral.sh/uv/)
 - A **You.com API key** — [sign up at you.com](https://you.com/platform) and get an API key.
-- An **Anthropic API key** — [get one at console.anthropic.com](https://console.anthropic.com). You can easily use any other model provider supported by LangChain.
+- An **OpenRouter API key** — [get one at openrouter.ai](https://openrouter.ai). The agent runs Minimax M2.7 (orchestrator) and M2.5 (subagents) via OpenRouter.
 
 ### Install
 
@@ -59,7 +59,7 @@ uv sync
 Copy `.env.example` to `.env` and fill in your keys:
 
 ```
-ANTHROPIC_API_KEY=your_anthropic_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key  # Required for Minimax models via OpenRouter
 YDC_API_KEY=your_you_com_api_key  # Required: get from you.com/platform
 
 # Enable auth when running as a server 
@@ -155,14 +155,14 @@ See [`STREAMING_SPEC.md`](./STREAMING_SPEC.md) for the full SSE event reference 
 ```bash
 docker build -t finance-research .
 docker run -p 8000:8000 \
-  -e ANTHROPIC_API_KEY=your_key \
+  -e OPENROUTER_API_KEY=your_key \
   -e YDC_API_KEY=your_key \
   finance-research
 ```
 
 ### Railway
 
-The project ships with a `Dockerfile` and is ready to deploy on [Railway](https://railway.com). Set the required environment variables (`ANTHROPIC_API_KEY`, `YDC_API_KEY`) in the Railway service settings. Optionally set `API_SECRET` to protect the `/run` endpoint.
+The project ships with a `Dockerfile` and is ready to deploy on [Railway](https://railway.com). Set the required environment variables (`OPENROUTER_API_KEY`, `YDC_API_KEY`) in the Railway service settings. Optionally set `API_SECRET` to protect the `/run` endpoint.
 
 ## Architecture
 
@@ -176,7 +176,7 @@ The GDP preset uses multi-subagent orchestration with the canonical Deep Agents 
 6. **Cross-reference** — The orchestrator reads all workpapers, checks for contradictions, and dispatches `general-purpose` for verification queries if needed.
 7. **Synthesize** — Merges all workpapers into a final report with unified `[[n]]` citation numbering. Written to `/final_report.md`.
 
-Each subagent receives the `you_finance_research` tool explicitly — the orchestrator itself doesn't have the tool (it coordinates via `task` dispatch, not direct API calls). The built-in `general-purpose` subagent is overridden with an explicit spec that includes the tool, so the orchestrator can dispatch ad-hoc verification queries. The orchestrator runs on Opus 4.6 for complex coordination and synthesis; all subagents run on Sonnet 4.6.
+Each subagent receives the `you_finance_research` tool explicitly — the orchestrator itself doesn't have the tool (it coordinates via `task` dispatch, not direct API calls). The built-in `general-purpose` subagent is overridden with an explicit spec that includes the tool, so the orchestrator can dispatch ad-hoc verification queries. The orchestrator runs on Minimax M2.7 for complex coordination and synthesis; all subagents run on Minimax M2.5.
 
 ## Tool Transport
 

@@ -253,15 +253,16 @@ def _gdp_subagents(date: str, tools: list | None = None) -> list[dict]:
             — each one must receive its tools explicitly.
 
     Model selection:
-        - Orchestrator: Opus 4.6 — complex multi-step coordination, cross-
-          referencing workpapers, applying analytical frameworks, synthesizing
-          the final report.
-        - All subagents: Sonnet 4.6 — fast and capable for query construction,
-          data formatting, statistical analysis, and qualitative synthesis.
-          The anomaly-analyst writes a JSON block to its workpaper.
+        - Orchestrator: Minimax M2P7 via OpenRouter — complex multi-step
+          coordination, cross-referencing workpapers, applying analytical
+          frameworks, synthesizing the final report.
+        - All subagents: Minimax M2P5 via OpenRouter — fast and capable for
+          query construction, data formatting, statistical analysis, and
+          qualitative synthesis. The anomaly-analyst writes a JSON block to
+          its workpaper.
     """
     api_tools = tools or []
-    subagent_model = "anthropic:claude-sonnet-4-6"
+    subagent_model = "openrouter:minimax/minimax-m2p5"
     api_skills = ["/skills/youdotcom-finance-research/"]
     return [
         {
