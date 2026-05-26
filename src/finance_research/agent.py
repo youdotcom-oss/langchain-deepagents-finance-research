@@ -14,8 +14,8 @@ from finance_research.output import FinanceReport, extract_report_from_messages
 from finance_research.prompts import PRESETS
 from finance_research.tools import (
     TOOL_TRANSPORT,
-    create_you_finance_tool,
     load_mcp_tools,
+    you_finance_research,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,8 +60,6 @@ def _copy_skill_files_to_backend(root_dir: str) -> None:
 async def create_finance_research_agent(
     preset: str = "gdp",
     output_format: str = "markdown",
-    ydc_api_key: str | None = None,
-    anthropic_api_key: str | None = None,
     output_dir: str | None = None,
 ):
     """Create a finance research agent with the given preset.
@@ -69,8 +67,6 @@ async def create_finance_research_agent(
     Args:
         preset: Which research preset to use. One of: "gdp", "software_valuations".
         output_format: "markdown" or "json" for the final report format.
-        ydc_api_key: You.com API key. Falls back to YDC_API_KEY env var.
-        anthropic_api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
         output_dir: Directory where workpapers and final report are written.
             Defaults to ./reports/<timestamp>/ so files are always visible.
     """
@@ -78,20 +74,15 @@ async def create_finance_research_agent(
         available = ", ".join(PRESETS.keys())
         raise ValueError(f"Unknown preset '{preset}'. Available: {available}")
 
-    ydc_key = ydc_api_key or os.environ.get("YDC_API_KEY", "")
-    if not ydc_key:
-        raise ValueError(
-            "YDC_API_KEY is required. Pass ydc_api_key or set the YDC_API_KEY env var."
-        )
-    if anthropic_api_key:
-        os.environ["ANTHROPIC_API_KEY"] = anthropic_api_key
+    if not os.environ.get("YDC_API_KEY"):
+        raise ValueError("YDC_API_KEY environment variable is required.")
 
     # --- Choose tool transport ---
     mcp_client = None
     if TOOL_TRANSPORT == "mcp":
-        tools, mcp_client = await load_mcp_tools(ydc_key)
+        tools, mcp_client = await load_mcp_tools()
     else:
-        tools = [create_you_finance_tool(ydc_key)]
+        tools = [you_finance_research]
 
     # --- Build system prompt from preset ---
     preset_config = PRESETS[preset]
@@ -166,8 +157,6 @@ async def run_finance_research(
     preset: str = "gdp",
     output_format: str = "markdown",
     thread_id: str = "finance-research-1",
-    ydc_api_key: str | None = None,
-    anthropic_api_key: str | None = None,
     output_dir: str | None = None,
 ) -> FinanceReport:
     """Run a finance research query and return a structured report.
@@ -177,8 +166,6 @@ async def run_finance_research(
         preset: Which research preset to use. One of: "gdp", "software_valuations".
         output_format: "markdown" or "json".
         thread_id: Thread ID for conversation state.
-        ydc_api_key: You.com API key. Falls back to YDC_API_KEY env var.
-        anthropic_api_key: Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
         output_dir: Directory for workpapers and final report. Defaults to ./reports/<timestamp>/.
 
     Returns:
@@ -187,8 +174,6 @@ async def run_finance_research(
     session = await create_finance_research_agent(
         preset=preset,
         output_format=output_format,
-        ydc_api_key=ydc_api_key,
-        anthropic_api_key=anthropic_api_key,
         output_dir=output_dir,
     )
 

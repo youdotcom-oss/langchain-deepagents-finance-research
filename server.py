@@ -53,7 +53,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["POST", "OPTIONS", "GET"],
-    allow_headers=["*", "X-YDC-API-Key"],
+    allow_headers=["*"],
 )
 
 
@@ -61,7 +61,6 @@ class RunRequest(BaseModel):
     preset: str = "gdp"
     query: str
     output_format: str = "markdown"
-    ydc_api_key: str = ""
 
 
 def _check_auth(request: Request):
@@ -70,16 +69,6 @@ def _check_auth(request: Request):
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     if token != API_SECRET:
         raise HTTPException(status_code=401, detail="Invalid API secret")
-
-
-def _resolve_ydc_api_key(request: Request, body_key: str = "") -> str:
-    key = body_key.strip() or request.headers.get("X-YDC-API-Key", "").strip()
-    if key:
-        return key
-    raise HTTPException(
-        status_code=401,
-        detail="You.com API key required. Pass it via the X-YDC-API-Key header or ydc_api_key body field.",
-    )
 
 
 _TOOL_LABELS: dict[str, str] = {
@@ -266,7 +255,6 @@ async def _stream_agent(agent, input_data, config, queue, all_messages, query):
 @app.post("/run")
 async def run_research(body: RunRequest, request: Request):
     _check_auth(request)
-    ydc_api_key = _resolve_ydc_api_key(request, body.ydc_api_key)
 
     if body.preset not in PRESETS:
         raise HTTPException(
@@ -290,7 +278,6 @@ async def run_research(body: RunRequest, request: Request):
                 session = await create_finance_research_agent(
                     preset=body.preset,
                     output_format=body.output_format,
-                    ydc_api_key=ydc_api_key,
                 )
 
                 config = {"configurable": {"thread_id": thread_id}}

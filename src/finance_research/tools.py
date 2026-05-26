@@ -59,93 +59,100 @@ def _mcp_http_client_factory(
 # ---------------------------------------------------------------------------
 # HTTP tool implementation
 # ---------------------------------------------------------------------------
-def create_you_finance_tool(api_key: str):
-    """Create a LangChain tool that calls the You.com Finance Research API via direct HTTP."""
+@tool(parse_docstring=True)
+async def you_finance_research(
+    input: str,
+    research_effort: Literal["deep", "exhaustive"] = "deep",
+) -> str:
+    """Research financial and macroeconomic topics with cited sources.
 
-    @tool(parse_docstring=True)
-    async def you_finance_research(
-        input: str,
-        research_effort: Literal["deep", "exhaustive"] = "deep",
-    ) -> str:
-        """Research financial and macroeconomic topics with cited sources.
+    Calls the You.com Finance Research API to get finance-grade research, source-backed numeric answers,
+    or exact public/company/macroeconomic evidence.
+    Invokes the you-finance MCP tool which internally runs multi-step research,
+    consults structured public data (World Bank, IMF, OECD, Eurostat, FRED) as well as licensed private data,
+    verifies sources across parallel branches, and returns cited answers with [[n]] source tags.
 
-        Calls the You.com Finance Research API to get finance-grade research, source-backed numeric answers,
-        or exact public/company/macroeconomic evidence.
-        Invokes the you-finance MCP tool which internally runs multi-step research,
-        consults structured public data (World Bank, IMF, OECD, Eurostat, FRED) as well as licensed private data,
-        verifies sources across parallel branches, and returns cited answers with [[n]] source tags.
+    Args:
+        input: The research question (max 40,000 characters).
+        research_effort: How thorough the research should be. lite is fast,
+            standard is default, deep is thorough, exhaustive is most complete.
+    """
+    import os
 
-        Args:
-            input: The research question (max 40,000 characters).
-            research_effort: How thorough the research should be. lite is fast,
-                standard is default, deep is thorough, exhaustive is most complete.
-        """
-        body = {
-            "input": input,
-            "research_effort": research_effort,
-        }
+    api_key = os.environ.get("YDC_API_KEY", "")
+    if not api_key:
+        return "Error: YDC_API_KEY environment variable is not set."
 
-        headers = {"Content-Type": "application/json", "X-API-Key": api_key}
+    body = {
+        "input": input,
+        "research_effort": research_effort,
+    }
 
-        last_error = None
-        response = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                async with httpx.AsyncClient(timeout=HTTP_API_TIMEOUT) as client:
-                    response = await client.post(
-                        HTTP_ENDPOINT,
-                        headers=headers,
-                        json=body,
-                    )
-                break
-            except (ssl.SSLError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    wait = RETRY_BACKOFF_SECONDS * attempt
-                    logger.warning(
-                        "you-finance call failed (attempt %d/%d): %s. Retrying in %ds...",
-                        attempt,
-                        MAX_RETRIES,
-                        e,
-                        wait,
-                    )
-                    await asyncio.sleep(wait)
+    headers = {"Content-Type": "application/json", "X-API-Key": api_key}
 
-        if response is None:
-            return f"Error: request failed after {MAX_RETRIES} attempts. Last error: {last_error}"
+    last_error = None
+    response = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_API_TIMEOUT) as client:
+                response = await client.post(
+                    HTTP_ENDPOINT,
+                    headers=headers,
+                    json=body,
+                )
+            break
+        except (ssl.SSLError, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF_SECONDS * attempt
+                logger.warning(
+                    "you-finance call failed (attempt %d/%d): %s. Retrying in %ds...",
+                    attempt,
+                    MAX_RETRIES,
+                    e,
+                    wait,
+                )
+                await asyncio.sleep(wait)
 
-        if response.status_code != 200:
-            return f"Error {response.status_code}: {response.text}"
+    if response is None:
+        return f"Error: request failed after {MAX_RETRIES} attempts. Last error: {last_error}"
 
-        data = response.json()
-        output = data.get("output", {})
-        content = output.get("content", "")
-        content_type = output.get("content_type", "text")
-        sources = output.get("sources", [])
+    if response.status_code != 200:
+        return f"Error {response.status_code}: {response.text}"
 
-        if content_type == "object":
-            result = json.dumps(content, indent=2)
-        else:
-            result = content
+    data = response.json()
+    output = data.get("output", {})
+    content = output.get("content", "")
+    content_type = output.get("content_type", "text")
+    sources = output.get("sources", [])
 
-        if sources:
-            result += "\n\n### Sources\n"
-            for i, src in enumerate(sources, 1):
-                title = src.get("title", "Untitled")
-                url = src.get("url", "")
-                result += f"[[{i}]] {title}: {url}\n"
+    if content_type == "object":
+        result = json.dumps(content, indent=2)
+    else:
+        result = content
 
-        return result
+    if sources:
+        result += "\n\n### Sources\n"
+        for i, src in enumerate(sources, 1):
+            title = src.get("title", "Untitled")
+            url = src.get("url", "")
+            result += f"[[{i}]] {title}: {url}\n"
 
-    return you_finance_research
+    return result
 
 
 # ---------------------------------------------------------------------------
 # MCP tool loader
 # ---------------------------------------------------------------------------
-async def load_mcp_tools(api_key: str):
+async def load_mcp_tools():
     """Load the you-finance tool via MCP transport."""
+    import os
+
     from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    api_key = os.environ.get("YDC_API_KEY", "")
+    if not api_key:
+        raise ValueError("YDC_API_KEY environment variable is not set.")
 
     client = MultiServerMCPClient(
         {
